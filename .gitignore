@@ -1,0 +1,17 @@
+node_modules
+dist
+dist-ssr
+*.local
+*.tsbuildinfo
+.vite
+.DS_Store
+.env
+.env.local
+.idea
+.vscode
+
+# Reference-only material — not part of the shipped app
+admin-templates-reference/
+template-reference/
+.claude/
+Color_Hunt_Palette.png
