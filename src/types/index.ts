@@ -10,13 +10,14 @@ export interface User {
   role?: string;
 }
 
-export type ProductCategory = 'model' | 'accessory' | 'filament' | 'service';
+// Category slug — DB-driven (BE P1-4); kept as string for forward-compat
+export type ProductCategory = string;
 
 export interface Product {
   id: string;
   name: string;
   slug: string;
-  category: ProductCategory;
+  category: string;            // category slug (FK → categories.slug)
   categoryLabel: string;
   price: number;
   oldPrice?: number;

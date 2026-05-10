@@ -1,79 +1,115 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Breadcrumb } from '@/components/Breadcrumb';
 import { ProductGrid } from '@/components/ProductGrid';
-import { products } from '@/data/products';
 import { useLang } from '@/i18n/LanguageContext';
-import type { ProductCategory } from '@/types';
+import { categoryApi, type Category } from '@/api/category';
+import { productApi, toProduct, type ApiProduct, type ProductSort } from '@/api/product';
+import type { Product } from '@/types';
 
 type SortKey = 'default' | 'price-asc' | 'price-desc' | 'rating';
 
 const PAGE_SIZE = 6;
 
-const priceRangesData = [
-  { id: 'all', min: 0, max: Infinity },
-  { id: 'r1',  min: 0, max: 100000 },
-  { id: 'r2',  min: 100000, max: 300000 },
-  { id: 'r3',  min: 300000, max: 600000 },
-  { id: 'r4',  min: 600000, max: Infinity },
-];
+const sortKeyToBe = (s: SortKey): ProductSort | undefined => {
+  switch (s) {
+    case 'price-asc':  return 'price_asc';
+    case 'price-desc': return 'price_desc';
+    case 'rating':     return 'rating_desc';
+    default:           return undefined;
+  }
+};
 
-const allCategories: Array<{ value: ProductCategory | 'all'; key: string }> = [
-  { value: 'all',       key: 'allCategories' },
-  { value: 'model',     key: 'model' },
-  { value: 'accessory', key: 'accessory' },
-  { value: 'filament',  key: 'filament' },
-  { value: 'service',   key: 'service' },
+const priceRangesData = [
+  { id: 'all', min: 0,        max: undefined as number | undefined },
+  { id: 'r1',  min: 0,        max: 100000 },
+  { id: 'r2',  min: 100000,   max: 300000 },
+  { id: 'r3',  min: 300000,   max: 600000 },
+  { id: 'r4',  min: 600000,   max: undefined },
 ];
 
 export const Shop = () => {
   const [searchParams, setSearchParams] = useSearchParams();
-  const { t } = useLang();
+  const { t, lang } = useLang();
 
-  const initialCat = (searchParams.get('category') as ProductCategory | null) ?? 'all';
-  const [category, setCategory] = useState<ProductCategory | 'all'>(initialCat);
+  const initialCat = searchParams.get('category') ?? 'all';
+  const [category, setCategory] = useState<string>(initialCat);
   const [priceRangeId, setPriceRangeId] = useState('all');
   const [sort, setSort] = useState<SortKey>('default');
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
 
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [items, setItems] = useState<Product[]>([]);
+  const [totalElements, setTotalElements] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Load category list once for filter sidebar
   useEffect(() => {
-    const c = searchParams.get('category');
-    setCategory((c as ProductCategory | null) ?? 'all');
+    let cancelled = false;
+    categoryApi.list()
+      .then((list) => { if (!cancelled) setCategories(list); })
+      .catch(() => { if (!cancelled) setCategories([]); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Sync ?category= → state on URL change
+  useEffect(() => {
+    setCategory(searchParams.get('category') ?? 'all');
     setPage(1);
   }, [searchParams]);
 
-  const filtered = useMemo(() => {
+  // Debounce search input → reset page
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  useEffect(() => {
+    const id = setTimeout(() => { setDebouncedSearch(search.trim()); setPage(1); }, 300);
+    return () => clearTimeout(id);
+  }, [search]);
+
+  // Fetch products whenever filters change
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true); setError(null);
+
     const range = priceRangesData.find((r) => r.id === priceRangeId)!;
-    let list = products.filter((p) => {
-      if (category !== 'all' && p.category !== category) return false;
-      if (p.price < range.min || p.price > range.max) return false;
-      if (search && !p.name.toLowerCase().includes(search.toLowerCase())) return false;
-      return true;
-    });
-    switch (sort) {
-      case 'price-asc':  list = [...list].sort((a, b) => a.price - b.price); break;
-      case 'price-desc': list = [...list].sort((a, b) => b.price - a.price); break;
-      case 'rating':     list = [...list].sort((a, b) => b.rating - a.rating); break;
-    }
-    return list;
-  }, [category, priceRangeId, sort, search]);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const paginated  = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+    const fetcher = debouncedSearch
+      ? productApi.search(debouncedSearch, page, PAGE_SIZE)
+      : productApi.list({
+          page,
+          size: PAGE_SIZE,
+          category: category === 'all' ? undefined : category,
+          minPrice: range.min > 0 ? range.min : undefined,
+          maxPrice: range.max,
+          sort: sortKeyToBe(sort),
+        });
 
-  const handleCategory = (val: ProductCategory | 'all') => {
+    fetcher
+      .then((res) => {
+        if (cancelled) return;
+        setItems(res.items.map((p: ApiProduct) => toProduct(p, lang)));
+        setTotalElements(res.totalElements);
+        setTotalPages(Math.max(1, res.totalPages));
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err?.message ?? 'Không tải được danh sách sản phẩm');
+        setItems([]); setTotalElements(0); setTotalPages(1);
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+
+    return () => { cancelled = true; };
+  }, [category, priceRangeId, sort, debouncedSearch, page, lang]);
+
+  const handleCategory = (val: string) => {
     setCategory(val);
     setPage(1);
     const next = new URLSearchParams(searchParams);
     if (val === 'all') next.delete('category');
     else next.set('category', val);
     setSearchParams(next, { replace: true });
-  };
-
-  const catLabel = (key: string) => {
-    if (key === 'allCategories') return t.shop.allCategories;
-    return t.shop.catLabels[key as ProductCategory] ?? key;
   };
 
   return (
@@ -88,15 +124,22 @@ export const Shop = () => {
             <aside className="filter-panel">
               <div className="filter-group">
                 <h5>{t.shop.categories}</h5>
-                {allCategories.map((opt) => (
-                  <label key={opt.value}>
+                <label>
+                  <input
+                    type="radio" name="category"
+                    checked={category === 'all'}
+                    onChange={() => handleCategory('all')}
+                  />
+                  {t.shop.allCategories}
+                </label>
+                {categories.map((c) => (
+                  <label key={c.id}>
                     <input
-                      type="radio"
-                      name="category"
-                      checked={category === opt.value}
-                      onChange={() => handleCategory(opt.value)}
+                      type="radio" name="category"
+                      checked={category === c.slug}
+                      onChange={() => handleCategory(c.slug)}
                     />
-                    {catLabel(opt.value === 'all' ? 'allCategories' : opt.value)}
+                    {c.iconEmoji ?? ''} {lang === 'vi' ? c.nameVi : c.nameEn}
                   </label>
                 ))}
               </div>
@@ -105,8 +148,7 @@ export const Shop = () => {
                 {priceRangesData.map((r, i) => (
                   <label key={r.id}>
                     <input
-                      type="radio"
-                      name="price"
+                      type="radio" name="price"
                       checked={priceRangeId === r.id}
                       onChange={() => { setPriceRangeId(r.id); setPage(1); }}
                     />
@@ -120,7 +162,7 @@ export const Shop = () => {
                   className="form-control"
                   placeholder={t.shop.searchPlaceholder}
                   value={search}
-                  onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                  onChange={(e) => setSearch(e.target.value)}
                   style={{ width: '100%' }}
                 />
               </div>
@@ -129,7 +171,7 @@ export const Shop = () => {
             <div>
               <div className="shop-toolbar">
                 <div className="result-count">
-                  {t.shop.showing} <strong>{filtered.length}</strong> {t.shop.of} {products.length} {t.shop.products}
+                  {t.shop.showing} <strong>{items.length}</strong> {t.shop.of} {totalElements} {t.shop.products}
                 </div>
                 <select value={sort} onChange={(e) => { setSort(e.target.value as SortKey); setPage(1); }}>
                   <option value="default">{t.shop.sortDefault}</option>
@@ -139,33 +181,24 @@ export const Shop = () => {
                 </select>
               </div>
 
-              <ProductGrid products={paginated} />
+              {error && <div className="alert alert-error" style={{ marginBottom: '1rem' }}>⚠️ {error}</div>}
+              {loading
+                ? <div className="empty-state"><div className="icon">⏳</div><h3>...</h3></div>
+                : <ProductGrid products={items} />}
 
               {totalPages > 1 && (
                 <div className="pagination">
-                  <button
-                    className="btn btn-ghost"
-                    disabled={page <= 1}
-                    onClick={() => setPage((p) => p - 1)}
-                  >
+                  <button className="btn btn-ghost" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
                     {t.shop.prev}
                   </button>
                   <div className="pagination-pages">
                     {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => (
-                      <button
-                        key={p}
-                        className={`page-num ${p === page ? 'active' : ''}`}
-                        onClick={() => setPage(p)}
-                      >
+                      <button key={p} className={`page-num ${p === page ? 'active' : ''}`} onClick={() => setPage(p)}>
                         {p}
                       </button>
                     ))}
                   </div>
-                  <button
-                    className="btn btn-ghost"
-                    disabled={page >= totalPages}
-                    onClick={() => setPage((p) => p + 1)}
-                  >
+                  <button className="btn btn-ghost" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>
                     {t.shop.next}
                   </button>
                 </div>

@@ -2,10 +2,11 @@ import { useState, useRef, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { Breadcrumb } from '@/components/Breadcrumb';
 import { ProductGrid } from '@/components/ProductGrid';
-import { products } from '@/data/products';
+import { productApi, toProduct } from '@/api/product';
 import { formatPrice } from '@/utils/format';
 import { useCart } from '@/contexts/CartContext';
 import { useLang } from '@/i18n/LanguageContext';
+import type { Product } from '@/types';
 
 type MediaTab = 'main' | 'video';
 
@@ -13,30 +14,69 @@ export const ProductDetail = () => {
   const { slug } = useParams<{ slug: string }>();
   const navigate = useNavigate();
   const { addItem } = useCart();
-  const { t } = useLang();
+  const { t, lang } = useLang();
   const [qty, setQty] = useState(1);
 
-  const product = products.find((p) => p.slug === slug);
+  const [product, setProduct] = useState<Product | null>(null);
+  const [related, setRelated] = useState<Product[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
 
-  const [activeMedia, setActiveMedia] = useState<MediaTab>(
-    product?.videoUrl ? 'video' : 'main'
-  );
+  const [activeMedia, setActiveMedia] = useState<MediaTab>('main');
   const videoRef = useRef<HTMLVideoElement>(null);
 
+  // Fetch product by slug + related (same category)
   useEffect(() => {
-    setActiveMedia(product?.videoUrl ? 'video' : 'main');
-  }, [slug]);
+    if (!slug) return;
+    let cancelled = false;
+    setLoading(true); setNotFound(false); setProduct(null); setRelated([]);
+
+    productApi.getBySlug(slug)
+      .then((api) => {
+        if (cancelled) return;
+        const p = toProduct(api, lang);
+        setProduct(p);
+        setActiveMedia(p.videoUrl ? 'video' : 'main');
+
+        // Related: same category (server-side filter), drop self, max 4
+        return productApi.list({ category: api.categorySlug, size: 8 }).then((res) => {
+          if (cancelled) return;
+          setRelated(
+            res.items
+              .filter((r) => r.id !== api.id)
+              .slice(0, 4)
+              .map((r) => toProduct(r, lang))
+          );
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err?.status === 404) setNotFound(true);
+        else setNotFound(true);
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+
+    return () => { cancelled = true; };
+  }, [slug, lang]);
 
   useEffect(() => {
     if (!videoRef.current) return;
-    if (activeMedia === 'video') {
-      videoRef.current.play().catch(() => {});
-    } else {
-      videoRef.current.pause();
-    }
+    if (activeMedia === 'video') videoRef.current.play().catch(() => {});
+    else videoRef.current.pause();
   }, [activeMedia]);
 
-  if (!product) {
+  if (loading) {
+    return (
+      <section className="section">
+        <div className="container empty-state">
+          <div className="icon">⏳</div>
+          <h2>...</h2>
+        </div>
+      </section>
+    );
+  }
+
+  if (notFound || !product) {
     return (
       <section className="section">
         <div className="container empty-state">
@@ -48,9 +88,7 @@ export const ProductDetail = () => {
     );
   }
 
-  const related = products.filter((p) => p.category === product.category && p.id !== product.id).slice(0, 4);
   const stars = '★'.repeat(Math.round(product.rating)) + '☆'.repeat(5 - Math.round(product.rating));
-
   const handleAddToCart = () => addItem(product, qty);
   const handleBuyNow   = () => { addItem(product, qty); navigate('/cart'); };
 
@@ -74,11 +112,7 @@ export const ProductDetail = () => {
                     ref={videoRef}
                     className="detail-video"
                     src={product.videoUrl}
-                    autoPlay
-                    muted
-                    loop
-                    playsInline
-                    controls
+                    autoPlay muted loop playsInline controls
                   />
                 ) : (
                   <span aria-hidden>{product.emoji}</span>
@@ -150,10 +184,12 @@ export const ProductDetail = () => {
                 </button>
               </div>
 
-              <div style={{ marginTop: '2rem' }}>
-                <h3>{t.detail.detailTitle}</h3>
-                <p>{product.longDescription}</p>
-              </div>
+              {product.longDescription && (
+                <div style={{ marginTop: '2rem' }}>
+                  <h3>{t.detail.detailTitle}</h3>
+                  <p>{product.longDescription}</p>
+                </div>
+              )}
             </div>
           </div>
         </div>
