@@ -1,17 +1,34 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ProductGrid } from '@/components/ProductGrid';
-import { products } from '@/data/products';
 import { useLang } from '@/i18n/LanguageContext';
 import { categoryApi, type Category } from '@/api/category';
+import { productApi, toProduct } from '@/api/product';
+import type { Product } from '@/types';
 
 const fallbackIcons = ['🎎', '🪴', '🧵', '🛠️'];
 const fallbackSlugs = ['model', 'accessory', 'filament', 'service'];
 
 export const Home = () => {
   const { t, lang } = useLang();
-  const featured = products.slice(0, 4);
-  const newArrivals = products.filter((p) => p.badge === 'new').slice(0, 4);
+
+  // Featured: 4 sản phẩm mới nhất (sort=created_desc); New arrivals: 4 sản phẩm badge=NEW
+  const [featured, setFeatured] = useState<Product[]>([]);
+  const [newArrivals, setNewArrivals] = useState<Product[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      productApi.list({ size: 4, sort: 'created_desc' }),
+      productApi.list({ size: 4, badge: 'NEW', sort: 'created_desc' }),
+    ])
+      .then(([feat, news]) => {
+        if (cancelled) return;
+        setFeatured(feat.items.map((p) => toProduct(p, lang)));
+        setNewArrivals(news.items.map((p) => toProduct(p, lang)));
+      })
+      .catch(() => { if (!cancelled) { setFeatured([]); setNewArrivals([]); } });
+    return () => { cancelled = true; };
+  }, [lang]);
 
   // Categories từ BE — fallback i18n nếu API rỗng/lỗi
   const [categories, setCategories] = useState<Category[] | null>(null);
