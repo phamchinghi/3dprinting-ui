@@ -2,17 +2,29 @@ import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Breadcrumb } from '@/components/Breadcrumb';
 import { useCart } from '@/contexts/CartContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/i18n/LanguageContext';
 import { formatPrice } from '@/utils/format';
-import { saveOrder } from '@/data/orders';
+import { orderApi, type ApiPaymentMethod } from '@/api/order';
+import { ApiError } from '@/api/client';
 import type { PaymentMethod } from '@/types';
+
+const PAYMENT_FE_TO_BE: Record<PaymentMethod, ApiPaymentMethod> = {
+  cod:     'COD',
+  bank:    'BANK',
+  ewallet: 'EWALLET',
+};
 
 export const Checkout = () => {
   const { items, subtotal, clear } = useCart();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const { t } = useLang();
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [payMethod, setPayMethod] = useState<PaymentMethod>('cod');
+
+  // Shipping fee — BE compute lại nhưng FE hiển thị preview cùng giá trị (flat 30k)
   const shipping = items.length > 0 ? 30000 : 0;
   const total    = subtotal + shipping;
 
@@ -29,26 +41,36 @@ export const Checkout = () => {
     );
   }
 
-  const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (submitting) return;
     const fd = new FormData(e.currentTarget);
-    const customer = {
-      firstName: fd.get('firstName') as string,
-      lastName:  fd.get('lastName')  as string,
-      email:     fd.get('email')     as string,
-      phone:     fd.get('phone')     as string,
-      address:   fd.get('address')   as string,
-      province:  fd.get('province')  as string,
-      district:  fd.get('district')  as string,
-      note:      (fd.get('note') as string) ?? '',
-    };
+
     setSubmitting(true);
-    setTimeout(() => {
-      saveOrder({ items, subtotal, shipping, total, customer, paymentMethod: payMethod });
+    setError(null);
+    try {
+      const created = await orderApi.create({
+        items: items.map((ci) => ({ productId: ci.product.id, quantity: ci.quantity })),
+        shipping: {
+          firstName: (fd.get('firstName') as string).trim(),
+          lastName:  (fd.get('lastName')  as string).trim(),
+          email:     ((fd.get('email')    as string) || '').trim() || undefined,
+          phone:     (fd.get('phone')     as string).trim(),
+          address:   (fd.get('address')   as string).trim(),
+          district:  ((fd.get('district') as string) || '').trim() || undefined,
+          province:  (fd.get('province')  as string).trim(),
+        },
+        paymentMethod: PAYMENT_FE_TO_BE[payMethod],
+        note: ((fd.get('note') as string) || '').trim() || undefined,
+      }, user !== null);
       clear();
-      alert(t.checkout.successMsg);
+      alert(t.checkout.successMsg + ' #' + created.orderNumber);
       navigate('/orders');
-    }, 600);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Không thể đặt đơn — vui lòng thử lại');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -66,17 +88,22 @@ export const Checkout = () => {
           <form onSubmit={handleSubmit} className="checkout-layout">
             <div>
               <h3>{t.checkout.shippingInfo}</h3>
+              {error && (
+                <div className="alert alert-error" style={{ marginBottom: '1rem', padding: '.75rem 1rem', background: 'rgba(220,38,38,.08)', color: '#dc2626', borderRadius: 6 }}>
+                  ⚠️ {error}
+                </div>
+              )}
               <div className="form-grid">
                 <div className="form-field"><label>{t.checkout.firstName}</label><input name="firstName" required /></div>
                 <div className="form-field"><label>{t.checkout.lastName}</label><input name="lastName" required /></div>
-                <div className="form-field full"><label>{t.checkout.email}</label><input name="email" type="email" required /></div>
+                <div className="form-field full"><label>{t.checkout.email}</label><input name="email" type="email" /></div>
                 <div className="form-field full"><label>{t.checkout.phone}</label><input name="phone" type="tel" required /></div>
                 <div className="form-field full">
                   <label>{t.checkout.address}</label>
                   <input name="address" required placeholder={t.checkout.addressPlaceholder} />
                 </div>
                 <div className="form-field"><label>{t.checkout.province}</label><input name="province" required /></div>
-                <div className="form-field"><label>{t.checkout.district}</label><input name="district" required /></div>
+                <div className="form-field"><label>{t.checkout.district}</label><input name="district" /></div>
                 <div className="form-field full">
                   <label>{t.checkout.note}</label>
                   <textarea name="note" rows={3} placeholder={t.checkout.notePlaceholder} />
