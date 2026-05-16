@@ -1,8 +1,10 @@
+import { useEffect, useState } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import { Breadcrumb } from '@/components/Breadcrumb';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/i18n/LanguageContext';
-import { getOrders } from '@/data/orders';
+import { orderApi, toLegacyOrder } from '@/api/order';
+import { ApiError } from '@/api/client';
 import { formatPrice } from '@/utils/format';
 import type { Order } from '@/types';
 
@@ -20,9 +22,32 @@ export const OrdersPage = () => {
   const { user } = useAuth();
   const { t } = useLang();
 
-  if (!user) return <Navigate to="/auth" replace />;
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const orders = getOrders();
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    setLoading(true); setError(null);
+    orderApi.listMine(1, 50)
+      .then((res) => {
+        if (cancelled) return;
+        // BE trả CANCELLED nhưng FE legacy chỉ có 4 status — filter ra CANCELLED hoặc map sang pending-display.
+        // Tạm thời drop CANCELLED khỏi danh sách user thấy.
+        setOrders(res.items
+          .filter((o) => o.status !== 'CANCELLED')
+          .map(toLegacyOrder));
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof ApiError ? err.message : 'Không tải được danh sách đơn');
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [user]);
+
+  if (!user) return <Navigate to="/auth" replace />;
 
   return (
     <>
@@ -32,7 +57,18 @@ export const OrdersPage = () => {
       />
       <section className="section">
         <div className="container">
-          {orders.length === 0 ? (
+          {loading ? (
+            <div className="empty-state">
+              <div className="icon">⏳</div>
+              <h2>...</h2>
+            </div>
+          ) : error ? (
+            <div className="empty-state">
+              <div className="icon">⚠️</div>
+              <h2>{error}</h2>
+              <Link to="/shop" className="btn btn-primary">{t.orders.startShopping}</Link>
+            </div>
+          ) : orders.length === 0 ? (
             <div className="empty-state">
               <div className="icon">📦</div>
               <h2>{t.orders.empty}</h2>
