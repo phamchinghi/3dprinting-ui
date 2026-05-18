@@ -1,15 +1,59 @@
+import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Breadcrumb } from '@/components/Breadcrumb';
-import { blogPosts } from '@/data/products';
-import { formatDate } from '@/utils/format';
+import { blogApi, type ApiBlogPost } from '@/api/blog';
+import { ApiError } from '@/api/client';
 import { useLang } from '@/i18n/LanguageContext';
 
-export const BlogDetail = () => {
-  const { slug }  = useParams<{ slug: string }>();
-  const { t }     = useLang();
-  const post      = blogPosts.find((p) => p.slug === slug);
+const fmtDate = (iso: string | null) => iso ? new Date(iso).toLocaleDateString('vi-VN') : '';
 
-  if (!post) {
+export const BlogDetail = () => {
+  const { slug } = useParams<{ slug: string }>();
+  const { t }    = useLang();
+
+  const [post, setPost]       = useState<ApiBlogPost | null>(null);
+  const [related, setRelated] = useState<ApiBlogPost[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
+
+  useEffect(() => {
+    if (!slug) return;
+    let cancelled = false;
+    setLoading(true); setNotFound(false); setPost(null); setRelated([]);
+
+    blogApi.getBySlug(slug)
+      .then((p) => {
+        if (cancelled) return;
+        setPost(p);
+        // Related: lấy thêm bài cùng list public, loại bỏ chính mình, lấy max 3.
+        // BE chưa có /blog?category=... nên dùng list paginated rồi filter client-side.
+        return blogApi.list(1, 12).then((res) => {
+          if (cancelled) return;
+          setRelated(res.items.filter((r) => r.id !== p.id).slice(0, 3));
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status === 404) setNotFound(true);
+        else setNotFound(true);
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+
+    return () => { cancelled = true; };
+  }, [slug]);
+
+  if (loading) {
+    return (
+      <section className="section">
+        <div className="container empty-state">
+          <div className="icon">⏳</div>
+          <h2>...</h2>
+        </div>
+      </section>
+    );
+  }
+
+  if (notFound || !post) {
     return (
       <section className="section">
         <div className="container empty-state">
@@ -21,7 +65,7 @@ export const BlogDetail = () => {
     );
   }
 
-  const related = blogPosts.filter((p) => p.id !== post.id).slice(0, 3);
+  const dateStr = fmtDate(post.publishedAt ?? post.createdAt);
 
   return (
     <>
@@ -36,7 +80,9 @@ export const BlogDetail = () => {
       <section className="section">
         <div className="container" style={{ maxWidth: 800 }}>
           <div style={{ fontSize: '.9rem', color: 'var(--color-text-muted)', marginBottom: '1rem' }}>
-            {formatDate(post.date)} · {post.category} · {post.author}
+            {dateStr}
+            {post.categoryName && ` · ${post.categoryName}`}
+            {post.authorName   && ` · ${post.authorName}`}
           </div>
           <div style={{
             aspectRatio: '16/8',
@@ -47,11 +93,11 @@ export const BlogDetail = () => {
             borderRadius: 'var(--radius-lg)',
             marginBottom: '2rem',
           }}>
-            {post.emoji}
+            {post.emoji ?? '📰'}
           </div>
           <div style={{ fontSize: '1.1rem', lineHeight: 1.8 }}>
-            <p style={{ fontSize: '1.2rem', color: 'var(--color-text)' }}>{post.excerpt}</p>
-            <p>{post.content}</p>
+            {post.excerpt && <p style={{ fontSize: '1.2rem', color: 'var(--color-text)' }}>{post.excerpt}</p>}
+            {post.content && <p style={{ whiteSpace: 'pre-wrap' }}>{post.content}</p>}
             <p>
               {t.blog.contactCtaText}{' '}
               <Link to="/contact" style={{ color: 'var(--color-primary)', fontWeight: 600 }}>
@@ -63,23 +109,30 @@ export const BlogDetail = () => {
         </div>
       </section>
 
-      <section className="section" style={{ background: 'var(--color-bg-soft)' }}>
-        <div className="container">
-          <div className="section-title"><h2>{t.blog.related}</h2></div>
-          <div className="blog-grid">
-            {related.map((p) => (
-              <article key={p.id} className="blog-card">
-                <Link to={`/blog/${p.slug}`} className="media" aria-hidden><span>{p.emoji}</span></Link>
-                <div className="body">
-                  <div className="meta">{formatDate(p.date)} · {p.category}</div>
-                  <h4><Link to={`/blog/${p.slug}`}>{p.title}</Link></h4>
-                  <p>{p.excerpt}</p>
-                </div>
-              </article>
-            ))}
+      {related.length > 0 && (
+        <section className="section" style={{ background: 'var(--color-bg-soft)' }}>
+          <div className="container">
+            <div className="section-title"><h2>{t.blog.related}</h2></div>
+            <div className="blog-grid">
+              {related.map((p) => (
+                <article key={p.id} className="blog-card">
+                  <Link to={`/blog/${p.slug}`} className="media" aria-hidden>
+                    <span>{p.emoji ?? '📰'}</span>
+                  </Link>
+                  <div className="body">
+                    <div className="meta">
+                      {fmtDate(p.publishedAt ?? p.createdAt)}
+                      {p.categoryName && ` · ${p.categoryName}`}
+                    </div>
+                    <h4><Link to={`/blog/${p.slug}`}>{p.title}</Link></h4>
+                    {p.excerpt && <p>{p.excerpt}</p>}
+                  </div>
+                </article>
+              ))}
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+      )}
     </>
   );
 };
